@@ -12,54 +12,7 @@ import json
 import urllib.request
 
 
-def write_csv(csv_file, item_data_dict):
-    """
-    接收orderdict格式的商品数据
-    写入csv文件
-    :param csv_file:
-    :param item_data:
-    """
-    item_data_list = item_data_dict.values()
-    item_data_str = '\t'.join(item_data_list)
-
-    file = open(csv_file, 'a', encoding='utf16')
-    file.write(item_data_str + '\n')
-    file.close()
-    print('商品数据写入CSV文件成功...')
-
-
-def creat_csv(csv_file):
-    """
-    根据模板创建csv文件
-    :param csv_file:
-    :return:
-    OrderedDict格式的模板数据；
-    没个数据成对出现；
-    """
-    templet_csv_file = 'templet\\templet.csv'
-
-    file_src = open(templet_csv_file, 'r', encoding='utf16')
-    templet_lines = file_src.read().split('\n')
-    file_src.close()
-
-    file_tar = open(csv_file, 'w', encoding='utf16')
-    file_tar.write(templet_lines[0] + '\n')
-    file_tar.write(templet_lines[1] + '\n')
-    file_tar.write(templet_lines[2] + '\n')
-    file_tar.close()
-    print('创建CSV文件成功：' + csv_file)
-
-    templet_data_dict = OrderedDict()
-    title_eng_list = templet_lines[1].split('\t')
-    data_list = templet_lines[3].split('\t')
-
-    for i in range(len(title_eng_list)):
-        templet_data_dict[title_eng_list[i]] = data_list[i]
-
-    return templet_data_dict
-
-
-def water_mark(img_source, water_str):
+def water_mark(img_source, water_str, color='white'):
     """
     在图片上打水印；
     同时在左上角写上字
@@ -67,7 +20,12 @@ def water_mark(img_source, water_str):
     :param water_str:在左上角写的字
     :return:
     """
-    img_water_mark = 'watermark\\watermark.png'
+    img_water_mark = ''
+    if color == 'black':
+        img_water_mark = 'watermark\\watermark_black.png'
+    else:
+        img_water_mark = 'watermark\\watermark.png'
+
     text_font = ImageFont.truetype("watermark\\xjlFont.ttf", 50)
     text_color = (80, 80, 80)  # 深灰色
     text_pos = (10, 10)  # 从左上角计算
@@ -95,31 +53,6 @@ def water_mark(img_source, water_str):
         return True
 
 
-def make_dir(item_dir):
-    """
-    根据url的最后一个字段
-    创建对应名称的文件夹
-    :param item_dir:
-    :return:
-    返回文件夹绝对路径
-    """
-    FP_ROOT_URL = 'https://www.freepeople.com/china/shop/'
-    item_dir = item_dir.replace(FP_ROOT_URL, '')
-    folder_rel_path = item_dir.replace('/', '')
-
-    try:
-        if not os.path.exists(folder_rel_path):
-            os.mkdir(folder_rel_path)
-
-    except Exception as e:
-        print(">>>>>>>>>>> Make dir EXCEPTION:  " + str(e))
-        return None
-
-    else:
-        folder_abs_path = os.getcwd() + '\\' + folder_rel_path + '\\'
-        return folder_abs_path, folder_rel_path
-
-
 def get_html_soup(url, headers):
     """
 
@@ -140,23 +73,24 @@ def get_html_soup(url, headers):
         return soup, response.headers
 
 
-def check_url(url):
-    """
-    检查输入的url是否是FP中国的地址
-    :param url:
-    :return:
-    """
-    FP_ROOT_URL = 'https://www.freepeople.com/china/shop/'
-    if url.startswith(FP_ROOT_URL):
-        return True
-    else:
-        print('错误：输入的地址不是FP中国的商品地址...')
-        return False
-
-
 def analyse_freepeople(fp_url):
-    item_path, item_rel_path = make_dir(fp_url)
+    # 分析fp网址，提取商品目录名称并创建目录
+    item_dir = fp_url
+    item_dir = item_dir.replace(FP_ROOT_URL, '')
+    item_dir = item_dir.replace('/', '')
 
+    try:
+        if not os.path.exists(item_dir):
+            os.mkdir(item_dir)
+
+    except Exception as e:
+        print(">>>>>>>>>>> Make dir EXCEPTION:  " + str(e))
+        return None
+
+    else:
+        item_path = os.getcwd() + '\\' + item_dir + '\\'
+
+    # 连接并请求网页
     request_headers = {}
     request_headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
     soup, response_headers = get_html_soup(fp_url, request_headers)
@@ -286,8 +220,6 @@ def analyse_freepeople(fp_url):
     # 取fpme中的图片
     fpme_url = 'https://www.freepeople.com/api/engage/v0/fp-us/styles/' + item_id + '/pictures?limit=30&offset=0'
 
-    print(response_headers)
-
     for value in response_headers.values():
         if value.find('urbn_auth_payload') >= 0:
             start_pos = value.find('%22authToken%22%3A%22') + len('%22authToken%22%3A%22')
@@ -295,7 +227,6 @@ def analyse_freepeople(fp_url):
             request_headers['X-Urbn-Auth-Token'] = value[start_pos: end_pos]
 
     try:
-
         request = urllib.request.Request(fpme_url, headers=request_headers)
         response = urllib.request.urlopen(request)
         json_str = response.read().decode('utf-8')
@@ -325,51 +256,114 @@ def analyse_freepeople(fp_url):
     return
 
 
+def analyse_revolve(revolve_url):
+    # 分析revolve网址，提取商品目录名称并创建目录
+    item_dir = revolve_url
+    item_dir = item_dir.replace(REVOLVE_ROOT_URL, '')
+    item_dir = item_dir[:item_dir.find('/')]
+    item_name_with_color = item_dir
+    item_dir = item_dir[:item_dir.find('-in-')]
+
+    try:
+        if not os.path.exists(item_dir):
+            os.mkdir(item_dir)
+
+    except Exception as e:
+        print(">>>>>>>>>>> Make dir EXCEPTION:  " + str(e))
+        return None
+
+    else:
+        item_path = os.getcwd() + '\\' + item_dir + '\\'
+
+    # 连接并请求网页
+    request_headers = {}
+    request_headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
+    soup, response_headers = get_html_soup(revolve_url, request_headers)
+
+    div_img_page = soup.find('div',
+                         attrs={'id': 'js-primary-slideshow__pager'})
+
+    item_color = soup.find('span',
+                       attrs={'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
+
+    for img in div_img_page.find_all('a'):
+        img_url = img['data-zoom-image']
+        img_name = img_url[img_url.rfind('/') + 1:]
+
+        try:
+            urllib.request.urlretrieve(img_url, item_path + img_name)
+            water_mark(item_path + img_name, item_color, 'black')
+            print(item_color + '-' + img_name)
+        except Exception as e:
+            print(">>>>>>>>>>> Get picture EXCEPTION:  " + str(e))
+            continue
+
+
+    # # 看是否有其他颜色
+    color_list = soup.find('div',
+                           attrs={'class': 'product-swatches product-swatches--lg u-margin-t--none'})
+
+    if color_list is not None:
+        for li in color_list.find_all('li'):
+            color_url = li['onclick']
+            color_url = color_url[color_url.find("('/")+3 : color_url.find("§")]
+            if item_name_with_color not in color_url:
+                revolve_url = REVOLVE_ROOT_URL + color_url
+                soup, response_headers = get_html_soup(revolve_url, request_headers)
+
+                div_img_page = soup.find('div',
+                         attrs={'id': 'js-primary-slideshow__pager'})
+
+                item_color = soup.find('span',
+                       attrs={'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
+
+                for img in div_img_page.find_all('a'):
+                    img_url = img['data-zoom-image']
+                    img_name = img_url[img_url.rfind('/') + 1:]
+
+                    try:
+                        urllib.request.urlretrieve(img_url, item_path + img_name)
+                        water_mark(item_path + img_name, item_color, 'black')
+                        print(item_color + '-' + img_name)
+                    except Exception as e:
+                        print(">>>>>>>>>>> Get picture EXCEPTION:  " + str(e))
+                        continue
+    return
+
+
 def main():
     while True:
-        print('/===========================/')
-        print('input a free people url....')
+        print('/---------------------------/')
+        print('支持以下网站：')
+        print('Freepeople中国')
+        print('Revolve')
+        print('/---------------------------/')
+        print('请输入一个商品地址....')
         url = input('>>')
 
-        if not check_url(url):
-            return
-
-        analyse_freepeople(url)
-
-
-def assemble_item_data(templet_data_dict, item_data_dict):
-    for key in item_data_dict.keys():
-        templet_data_dict[key] = item_data_dict[key]
-    return templet_data_dict
-
-
-def FP_spider():
-    ROOT = 'https://www.freepeople.com/china/'
-
-    headers = {}
-    headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
-    soup, cookie = get_html_soup(ROOT, headers)
-
-    for link in soup.find_all('a'):
-        print(link)
+        if url.startswith(FP_ROOT_URL):
+            analyse_freepeople(url)
+        elif url.startswith(REVOLVE_ROOT_URL):
+            analyse_revolve(url)
+        else:
+            print('错误：输入的地址不是合法的商品地址...')
+            print('\n')
 
 
 def test():
-    # while True:
-    #     print('/===========================/')
-    #     print('input a free people url....')
-    #     url = input('>>')
-    #     main(url)
-
-    url = 'https://www.freepeople.com/china/shop/modern-kimono-dress/'
-    analyse_freepeople(url)
+    url = 'http://www.revolve.com/free-people-sophia-dress-in-ivory/dp/FREE-WD1066/?d=Womens'
+    analyse_revolve(url)
 
 
 if __name__ == '__main__':
     # 设定利润率
     PROFIT_RATE = 0.2
-
     # 设置全局超时时间
     socket.setdefaulttimeout(10)
 
+    # 设置全局变量
+    FP_ROOT_URL = 'https://www.freepeople.com/china/shop/'
+    REVOLVE_ROOT_URL = 'http://www.revolve.com/'
+
     main()
+    # test()
