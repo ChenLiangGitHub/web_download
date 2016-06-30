@@ -238,32 +238,32 @@ def analyse_freepeople(fp_url):
     #         print(model_info)
     #
     # 取颜色列表及不同颜色的图片
-    # color_list = {}
-    # div_color = div_item.find('div',
-    #                           attrs={'class': 'swatches'})
-    #
-    # for color in div_color.find_all('img'):
-    #     color_list[color['data-color-code']] = color['data-color-name']
-    #
-    #     color_name = color['data-color-name'].replace('/', '_')
-    #     color_url = color['src'].replace('swatch?$swatch-detail$', '')
-    #     fp_pos = color_url.find('FreePeople/') + len('FreePeople/')
-    #     color_path = item_path + '\\' + color_name + '_' + color_url[fp_pos:]
-    #
-    #     color_view = color['data-view-code']
-    #     for view in color_view.split(','):
-    #         color_view_url = color_url + view + '?$product$&wid=602'
-    #         color_view_path = color_path + view + '.jpg'
-    #         try:
-    #             urllib.request.urlretrieve(color_view_url, color_view_path)
-    #             water_mark(color_view_path, color_name)
-    #
-    #         except Exception as e:
-    #             print(">>>>>>>>>>> Get color picture EXCEPTION:  " + str(e))
-    #             continue
-    #
-    #         else:
-    #             print(color_view_path)
+    color_list = {}
+    div_color = div_item.find('div',
+                              attrs={'class': 'swatches'})
+
+    for color in div_color.find_all('img'):
+        color_list[color['data-color-code']] = color['data-color-name']
+
+        color_name = color['data-color-name'].replace('/', '_')
+        color_url = color['src'].replace('swatch?$swatch-detail$', '')
+        fp_pos = color_url.find('FreePeople/') + len('FreePeople/')
+        color_path = item_path + '\\' + color_name + '_' + color_url[fp_pos:]
+
+        color_view = color['data-view-code']
+        for view in color_view.split(','):
+            color_view_url = color_url + view + '?$product$&wid=602'
+            color_view_path = color_path + view + '.jpg'
+            try:
+                urllib.request.urlretrieve(color_view_url, color_view_path)
+                water_mark(color_view_path, color_name)
+
+            except Exception as e:
+                print(">>>>>>>>>>> Get color picture EXCEPTION:  " + str(e))
+                continue
+
+            else:
+                print(color_view_path)
 
     # print(type(color_list))
 
