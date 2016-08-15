@@ -98,6 +98,41 @@ def analyse_freepeople(fp_url):
     div_item = soup.find('div',
                          attrs={'class': 'product-details  product-images row collapse'})
 
+    # 取商品编号
+    soup_id = soup.find('button',
+                        attrs={'class': 'like-it button-white button-like-it'})
+
+    if soup_id is not None:
+        item_id = soup_id['data-style-number']
+
+    # 取颜色列表及不同颜色的图片
+    color_list = {}
+    div_color = div_item.find('div',
+                              attrs={'class': 'swatches'})
+
+    for color in div_color.find_all('img'):
+        color_list[color['data-color-code']] = color['data-color-name']
+
+        color_name = color['data-color-name'].replace('/', '_')
+        color_url = color['src'].replace('swatch?$swatch-detail$', '')
+        fp_pos = color_url.find('FreePeople/') + len('FreePeople/')
+        color_path = item_path + '\\' + color_name + '_' + color_url[fp_pos:]
+
+        color_view = color['data-view-code']
+        for view in color_view.split(','):
+            color_view_url = color_url + view + '?$product$&wid=602'
+            color_view_path = color_path + view + '.jpg'
+            try:
+                urllib.request.urlretrieve(color_view_url, color_view_path)
+                water_mark(color_view_path, color_name)
+
+            except Exception as e:
+                print(">>>>>>>>>>> Get color picture EXCEPTION:  " + str(e))
+                continue
+
+            else:
+                print(color_view_path)
+
     # # 取商品名称
     # soup_name = div_item.find('h1',
     #                           attrs={'itemprop': 'name'})
@@ -120,11 +155,7 @@ def analyse_freepeople(fp_url):
     #     except Exception as e:
     #         print(">>>>>>>>>>> get finally price EXCEPTION:  " + str(e))
     #
-    # 取商品编号
-    soup_id = div_item.find('p',
-                            attrs={'itemprop': 'productID'})
-    if soup_id is not None:
-        item_id = soup_id.get_text().replace('款式: ', '').strip()
+
 
     # # 取商品描述
     # soup_desc = div_item.find('p',
@@ -171,33 +202,6 @@ def analyse_freepeople(fp_url):
     #         model_info = soup_model_info.get_text().replace('\n', '').replace(' ', '')
     #         print(model_info)
     #
-    # 取颜色列表及不同颜色的图片
-    color_list = {}
-    div_color = div_item.find('div',
-                              attrs={'class': 'swatches'})
-
-    for color in div_color.find_all('img'):
-        color_list[color['data-color-code']] = color['data-color-name']
-
-        color_name = color['data-color-name'].replace('/', '_')
-        color_url = color['src'].replace('swatch?$swatch-detail$', '')
-        fp_pos = color_url.find('FreePeople/') + len('FreePeople/')
-        color_path = item_path + '\\' + color_name + '_' + color_url[fp_pos:]
-
-        color_view = color['data-view-code']
-        for view in color_view.split(','):
-            color_view_url = color_url + view + '?$product$&wid=602'
-            color_view_path = color_path + view + '.jpg'
-            try:
-                urllib.request.urlretrieve(color_view_url, color_view_path)
-                water_mark(color_view_path, color_name)
-
-            except Exception as e:
-                print(">>>>>>>>>>> Get color picture EXCEPTION:  " + str(e))
-                continue
-
-            else:
-                print(color_view_path)
 
     # print(type(color_list))
 
@@ -219,6 +223,8 @@ def analyse_freepeople(fp_url):
 
     # 取fpme中的图片
     fpme_url = 'https://www.freepeople.com/api/engage/v0/fp-us/styles/' + item_id + '/pictures?limit=30&offset=0'
+
+    print(fpme_url)
 
     for value in response_headers.values():
         if value.find('urbn_auth_payload') >= 0:
@@ -246,7 +252,7 @@ def analyse_freepeople(fp_url):
 
         try:
             urllib.request.urlretrieve(img_url, fpme_img_name)
-            water_mark(fpme_img_name, 'Fpme Pic')
+            water_mark(fpme_img_name, 'Fpme')
         except Exception as e:
             print(">>>>>>>>>>> Get fpme picture EXCEPTION:  " + str(e))
             continue
@@ -281,10 +287,10 @@ def analyse_revolve(revolve_url):
     soup, response_headers = get_html_soup(revolve_url, request_headers)
 
     div_img_page = soup.find('div',
-                         attrs={'id': 'js-primary-slideshow__pager'})
+                             attrs={'id': 'js-primary-slideshow__pager'})
 
     item_color = soup.find('span',
-                       attrs={'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
+                           attrs={'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
 
     for img in div_img_page.find_all('a'):
         img_url = img['data-zoom-image']
@@ -298,7 +304,6 @@ def analyse_revolve(revolve_url):
             print(">>>>>>>>>>> Get picture EXCEPTION:  " + str(e))
             continue
 
-
     # # 看是否有其他颜色
     color_list = soup.find('div',
                            attrs={'class': 'product-swatches product-swatches--lg u-margin-t--none'})
@@ -306,16 +311,17 @@ def analyse_revolve(revolve_url):
     if color_list is not None:
         for li in color_list.find_all('li'):
             color_url = li['onclick']
-            color_url = color_url[color_url.find("('/")+3 : color_url.find("§")]
+            color_url = color_url[color_url.find("('/") + 3: color_url.find("§")]
             if item_name_with_color not in color_url:
                 revolve_url = REVOLVE_ROOT_URL + color_url
                 soup, response_headers = get_html_soup(revolve_url, request_headers)
 
                 div_img_page = soup.find('div',
-                         attrs={'id': 'js-primary-slideshow__pager'})
+                                         attrs={'id': 'js-primary-slideshow__pager'})
 
                 item_color = soup.find('span',
-                       attrs={'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
+                                       attrs={
+                                           'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
 
                 for img in div_img_page.find_all('a'):
                     img_url = img['data-zoom-image']
@@ -351,13 +357,11 @@ def main():
 
 
 def test():
-    url = 'http://www.revolve.com/free-people-sophia-dress-in-ivory/dp/FREE-WD1066/?d=Womens'
-    analyse_revolve(url)
+    url = 'https://www.freepeople.com/china/shop/reign-over-me-lace-dress/'
+    analyse_freepeople(url)
 
 
 if __name__ == '__main__':
-    # 设定利润率
-    PROFIT_RATE = 0.2
     # 设置全局超时时间
     socket.setdefaulttimeout(10)
 
