@@ -6,10 +6,11 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 from collections import OrderedDict
 
-import os
+import os, time
 import socket
 import json
 import urllib.request
+import sqlite3
 
 
 def water_mark(img_source, water_str, color='white'):
@@ -337,6 +338,57 @@ def analyse_revolve(revolve_url):
     return
 
 
+def fp_spider_analyze_catalog(catalog_url):
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    # 连接并请求网页
+    request_headers = {}
+    request_headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
+    soup, response_headers = get_html_soup(FP_SPIDER_ROOT_URL, request_headers)
+
+    for link in soup.find_all('a'):
+        link_url = link.get('href')
+        if link_url is not None:
+            if link_url.startswith(FP_SPIDER_ROOT_URL):
+                if link_url != FP_SPIDER_ROOT_URL:
+                    print(link_url)
+                    cur.execute('INSERT INTO catalog VALUES (?,?)', (link_url, 0))
+
+    conn.commit()
+    conn.close()
+    return
+
+
+def fp_spider():
+    start = time.time()
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog'")
+    if len(cur.fetchall()) == 0:
+        # 初始化数据库
+        # 创建目录表单
+        cur.execute('''CREATE TABLE IF NOT EXISTS catalog
+                 (catalog_url         TEXT,
+                  deal                INT)''')
+
+        # 插入根节点
+        cur.execute('INSERT INTO catalog VALUES (?,?)', (FP_SPIDER_ROOT_URL,0))
+
+        # Save (commit) the changes
+        conn.commit()
+
+    print(time.time()-start)
+
+    cur.execute("SELECT catalog_url FROM catalog WHERE deal=0")
+    catalog_url = cur.fetchone()
+    conn.close()
+    fp_spider_analyze_catalog(catalog_url)
+
+    return
+
+
+
 def main():
     while True:
         print('/---------------------------/')
@@ -366,8 +418,11 @@ if __name__ == '__main__':
     socket.setdefaulttimeout(10)
 
     # 设置全局变量
+    FP_SPIDER_ROOT_URL = "https://www.freepeople.com/china/"
     FP_ROOT_URL = 'https://www.freepeople.com/china/shop/'
     REVOLVE_ROOT_URL = 'http://www.revolve.com/'
+    DB_NAME = "fp_spider.db"
 
-    main()
+    # main()
     # test()
+    fp_spider()
