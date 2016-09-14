@@ -13,7 +13,7 @@ import urllib.request
 import sqlite3
 
 
-def water_mark(img_source, water_str, color='white'):
+def water_mark(img_source, water_str, color='black'):
     """
     在图片上打水印；
     同时在左上角写上字
@@ -69,7 +69,7 @@ def get_html_soup(url, headers):
         soup = BeautifulSoup(html, "html.parser")
     except Exception as e:
         print(">>>>>>>>>>> Get HTML soup EXCEPTION:  " + str(e))
-        return None
+        return None, None
     else:
         return soup, response.headers
 
@@ -139,7 +139,8 @@ def analyse_freepeople(fp_url):
     #                           attrs={'itemprop': 'name'})
     # if soup_name is not None:
     #     item_name = soup_name.get_text().strip()
-    #     item_data_dict['title'] = '商品名称：皮淘美国代购free people ' + item_name
+    #     # item_data_dict['title'] = '商品名称：皮淘美国代购free people ' + item_name
+    #     print(item_name)
     #
     # # 取商品价格
     # soup_price = div_item.find('h3',
@@ -158,13 +159,17 @@ def analyse_freepeople(fp_url):
     #
 
 
-    # # 取商品描述
-    # soup_desc = div_item.find('p',
-    #                           attrs={'class': 'product-desc'})
-    # if soup_desc is not None:
-    #     item_desc = soup_desc.get_text().strip()
-    #     print('商品描述：' + item_desc)
-    #     item_data_dict['subtitle'] = item_desc
+    # 取商品描述
+    soup_desc = div_item.find('p',
+                              attrs={'class': 'product-desc'})
+    if soup_desc is None:
+        soup_desc = div_item.find('div',
+                                  attrs={'class': 'product-desc'})
+    if soup_desc is not None:
+        item_desc = soup_desc.get_text().strip()
+        print('商品描述：' + item_desc)
+        # item_data_dict['subtitle'] = item_desc
+
     #
     # # 取清洁须知
     # soup_care = div_item.find('ul',
@@ -338,55 +343,153 @@ def analyse_revolve(revolve_url):
     return
 
 
-def fp_spider_analyze_catalog(catalog_url):
-    conn = sqlite3.connect(DB_NAME)
+def fp_spider_analyze_catalog(catalog_id):
+    conn = sqlite3.connect(DB_NAME,check_same_thread = False)
     cur = conn.cursor()
+
+    # 从数据库中，根据id查找对应的url
+    # 以？这个替代符写sql语句的时候，
+    # 后面括号里的数据类型必须是元组，
+    # 所以只有一个元素的时候，后面要加一个逗号
+    cur.execute("SELECT catalog_url FROM catalog WHERE id=?", (catalog_id,))
+    catalog_url = cur.fetchone()[0]
+
+    print(catalog_url)
+
     # 连接并请求网页
     request_headers = {}
     request_headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
-    soup, response_headers = get_html_soup(FP_SPIDER_ROOT_URL, request_headers)
+    soup, response_headers = get_html_soup(catalog_url, request_headers)
 
-    for link in soup.find_all('a'):
-        link_url = link.get('href')
-        if link_url is not None:
-            if link_url.startswith(FP_SPIDER_ROOT_URL):
-                if link_url != FP_SPIDER_ROOT_URL:
-                    print(link_url)
-                    cur.execute('INSERT INTO catalog VALUES (?,?)', (link_url, 0))
+    if soup is not None:
+        if catalog_url.find('?page=') < 0:
+            # 只有是第一页的才尝试进行分页的操作
+            # 找到total - page - count的值
+            # 然后将page=2至total-page-count写入数据库
 
+            total_page_count = 1
+            span_page_count = soup.find('span',
+                                    attrs={'class': 'total-page-count'})
+            # 这里有可能找不到这个值，如果只有一页的话，页面上就不会有这个span
+
+            if span_page_count is not None:
+                total_page_count = int(span_page_count.get_text())
+
+            if total_page_count > 1:
+                # 理论上只要能够找到total_page_count的这个span，它的值就应该大于1
+                # 但是为了保险起见，这里加了一个判断
+                for page_num in range(total_page_count-1):
+                    catalog_url_page = catalog_url + '?page=' + str(page_num+2)
+                    print(catalog_url_page)
+                    try:
+                        cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (catalog_url_page, 0))
+                    except Exception as e:
+                        continue
+
+        # 这里是正常的筛查目录和商品的地方
+        for link in soup.find_all('a'):
+            link_url = link.get('href')
+            if link_url is not None:
+                # 对link进行处理，去掉后面的查询关键词；
+                query_pos = link_url.find('?')
+                if query_pos >=0:
+                    link_url = link_url[:query_pos]
+
+                # 如果link_url不是以'/'，统一加上，便于去重
+                if not link_url.endswith('/'):
+                    link_url = link_url + '/'
+
+                # 这些是商品
+                if link_url.startswith(FP_SPIDER_PRODUCT_CHN_PRE):
+                    try:
+                        cur.execute('INSERT INTO product VALUES (NULL,?,NULL,?)', (link_url, 0))
+                        print(link_url)
+                        print("It's a product.")
+                    except Exception as e:
+                        # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
+                        continue
+                elif link_url.startswith(FP_SPIDER_ROOT_CHN_URL):
+                    # 下面的就是目录
+                    try:
+                        cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (link_url, 0))
+                        print(link_url)
+                        print("It's a catalog.")
+                    except Exception as e:
+                        # print(">>>>>>>>>>> Insert catalog url EXCEPTION:  " + str(e))
+                        continue
+
+    cur.execute('UPDATE catalog SET deal=1 WHERE id=?', (catalog_id,))
     conn.commit()
     conn.close()
+    print(time.time()-start)
     return
+
+
+def init_DB(operation='keep'):
+    """
+    初始化数据库
+    :param operation:
+                    keep:如果存在数据库，继续使用该数据库
+                    new：删除现在的数据库，创建新的
+    """
+    if operation == "new":
+        os.remove(DB_NAME)
+
+    conn = sqlite3.connect(DB_NAME,check_same_thread = False)
+    cur = conn.cursor()
+
+    # 尝试创建目录表单
+    cur.execute('''CREATE TABLE IF NOT EXISTS catalog
+                         (id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                         catalog_url         TEXT UNIQUE,
+                         deal                INT)''')
+
+    # 尝试创建商品表单
+    cur.execute('''CREATE TABLE IF NOT EXISTS product
+                    (id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_url         TEXT UNIQUE,
+                    name                TEXT,
+                    deal                INT)''')
+
+    try:
+        # 尝试插入根节点
+        cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (FP_SPIDER_ROOT_CHN_URL, 0))
+    except Exception as e:
+        print("It's good.")
+
+    # Save (commit) the changes
+    conn.commit()
+    conn.close()
 
 
 def fp_spider():
-    start = time.time()
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-
-    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog'")
-    if len(cur.fetchall()) == 0:
-        # 初始化数据库
-        # 创建目录表单
-        cur.execute('''CREATE TABLE IF NOT EXISTS catalog
-                 (catalog_url         TEXT,
-                  deal                INT)''')
-
-        # 插入根节点
-        cur.execute('INSERT INTO catalog VALUES (?,?)', (FP_SPIDER_ROOT_URL,0))
-
-        # Save (commit) the changes
-        conn.commit()
+    init_DB()
 
     print(time.time()-start)
 
-    cur.execute("SELECT catalog_url FROM catalog WHERE deal=0")
-    catalog_url = cur.fetchone()
+    conn = sqlite3.connect(DB_NAME,check_same_thread = False)
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
+    catalog_id = cur.fetchone()[0]
     conn.close()
-    fp_spider_analyze_catalog(catalog_url)
+
+    while catalog_id:
+        print('catalog id is:' + str(catalog_id))
+        fp_spider_analyze_catalog(catalog_id)
+        conn = sqlite3.connect(DB_NAME,check_same_thread = False)
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
+            catalog_id = cur.fetchone()[0]
+        except Exception as e:
+            # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
+            catalog_id = None
+            continue
+        conn.close()
+
+    print("It's over.")
 
     return
-
 
 
 def main():
@@ -409,16 +512,20 @@ def main():
 
 
 def test():
-    url = 'https://www.freepeople.com/china/shop/reign-over-me-lace-dress/'
-    analyse_freepeople(url)
+    id = 15
+    fp_spider_analyze_catalog(id)
 
 
 if __name__ == '__main__':
     # 设置全局超时时间
     socket.setdefaulttimeout(10)
 
+    # 设置全局起始时间
+    start = time.time()
+
     # 设置全局变量
-    FP_SPIDER_ROOT_URL = "https://www.freepeople.com/china/"
+    FP_SPIDER_ROOT_CHN_URL = "https://www.freepeople.com/china/"
+    FP_SPIDER_PRODUCT_CHN_PRE = 'https://www.freepeople.com/china/shop/'
     FP_ROOT_URL = 'https://www.freepeople.com/china/shop/'
     REVOLVE_ROOT_URL = 'http://www.revolve.com/'
     DB_NAME = "fp_spider.db"
