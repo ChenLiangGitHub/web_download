@@ -95,16 +95,23 @@ def analyse_freepeople(fp_url):
     request_headers = {}
     request_headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
     soup, response_headers = get_html_soup(fp_url, request_headers)
+    if soup is None:
+        print("get_html_soup error.")
+        return
 
-    div_item = soup.find('div',
-                         attrs={'class': 'product-details  product-images row collapse'})
 
     # 取商品编号
     soup_id = soup.find('button',
                         attrs={'class': 'like-it button-white button-like-it'})
-
     if soup_id is not None:
         item_id = soup_id['data-style-number']
+    print(item_id)
+
+    div_item = soup.find('div',
+                             attrs={'class': 'product-details  product-images row collapse'})
+    if div_item is None:
+        print("div_item is not find.")
+        return
 
     # 取颜色列表及不同颜色的图片
     color_list = {}
@@ -440,16 +447,16 @@ def init_DB(operation='keep'):
 
     # 尝试创建目录表单
     cur.execute('''CREATE TABLE IF NOT EXISTS catalog
-                         (id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-                         catalog_url         TEXT UNIQUE,
-                         deal                INT)''')
+                         (id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                         catalog_url    TEXT UNIQUE,
+                         deal           INT)''')
 
     # 尝试创建商品表单
     cur.execute('''CREATE TABLE IF NOT EXISTS product
-                    (id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_url         TEXT UNIQUE,
-                    name                TEXT,
-                    deal                INT)''')
+                    (id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_url     TEXT UNIQUE,
+                    name            TEXT,
+                    deal            INT)''')
 
     try:
         # 尝试插入根节点
@@ -530,6 +537,9 @@ if __name__ == '__main__':
     REVOLVE_ROOT_URL = 'http://www.revolve.com/'
     DB_NAME = "fp_spider.db"
 
-    # main()
+    main()
     # test()
-    fp_spider()
+    # fp_spider()
+
+    # spider_class_test  = freepeople_spider('asdf')
+    # print(spider_class_test.database)
