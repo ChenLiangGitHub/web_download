@@ -3,26 +3,15 @@
 # __author__ = 'NB_Ren'
 
 import json
+import multiprocessing
 import os
 import sqlite3
 import time
-import socket
 import urllib.request
-import threading
+import datetime
 
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
-from collections import OrderedDict
-from multiprocessing import Pool
-import random
-
-
-def long_time_task(name):
-    print('Run task %s (%s)...' % (name, os.getpid()))
-    start = time.time()
-    time.sleep(random.random() * 3)
-    end = time.time()
-    print('Task %s runs %0.2f seconds.' % (name, (end - start)))
 
 
 class Url(object):
@@ -45,7 +34,200 @@ class Url(object):
 
 
 class Catalog(Url):
-    pass
+    def __init__(self, url):
+        Url.__init__(self, url)
+
+
+class FreePeopleSpider(object):
+    def __init__(self):
+        self.database_file = "freepeople_spider.db"
+        self.init_database()
+        self.spider()
+
+    def init_database(self):
+        """
+            初始化数据库
+            :param operation:
+                            keep:如果存在数据库，继续使用该数据库
+                            new：删除现在的数据库，创建新的
+        """
+        conn = sqlite3.connect(self.database_file, check_same_thread=False)
+        cur = conn.cursor()
+
+        # 尝试创建目录表单
+        cur.execute('''CREATE TABLE IF NOT EXISTS catalog
+                                 (id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                                 catalog_url    TEXT UNIQUE,
+                                 deal           INT)''')
+
+        # 尝试创建商品表单
+        cur.execute('''CREATE TABLE IF NOT EXISTS product
+                            (id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                            product_url     TEXT UNIQUE,
+                            name            TEXT,
+                            deal            INT)''')
+
+        try:
+            # 尝试插入根节点
+            cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (FP_SPIDER_ROOT_CHN_URL, 0))
+        except Exception as e:
+            print("Init database Error:" + str(e))
+
+        # Save (commit) the changes
+        conn.commit()
+        conn.close()
+
+    def get_soup(self, url):
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            response = urllib.request.urlopen(request, timeout=20)
+            html = response.read().decode('utf-8')
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception as e:
+            print(">>>> get_soup EXCEPTION >>>> " + str(e))
+            return None
+        else:
+            self.headers = self.response.headers
+            return soup
+
+    def spider(self):
+        conn = sqlite3.connect(self.database_file, check_same_thread=False)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
+        result = cur.fetchall()
+
+
+        while len(result) > 0:
+            pool = multiprocessing.Pool(processes=100)
+            for row in result:
+                pool.apply_async(self.analyse_catalog, (row[0],))
+            pool.close()
+            pool.join()
+
+            cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
+            result = cur.fetchall()
+
+        conn.close()
+        print("It's over.")
+
+    def analyse_catalog(self, catalog_id):
+        DB_NAME = "freepeople_spider.db"
+        FP_SPIDER_ROOT_CHN_URL = "https://www.freepeople.com/china/"
+        FP_SPIDER_PRODUCT_CHN_PRE = 'https://www.freepeople.com/china/shop/'
+
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        cur = conn.cursor()
+
+        # 从数据库中，根据id查找对应的url
+        # 以？这个替代符写sql语句的时候，
+        # 后面括号里的数据类型必须是元组，
+        # 所以只有一个元素的时候，后面要加一个逗号
+        cur.execute("SELECT catalog_url FROM catalog WHERE id=?", (catalog_id,))
+        catalog_url = cur.fetchone()[0]
+
+        # 连接并请求网页
+        soup= self.get_soup(catalog_url)
+
+        if soup is not None:
+            if catalog_url.find('?page=') < 0:
+                # 只有是第一页的才尝试进行分页的操作
+                # 找到total - page - count的值
+                # 然后将page=2至total-page-count写入数据库
+
+                total_page_count = 1
+                span_page_count = soup.find('span',
+                                            attrs={'class': 'total-page-count'})
+                # 这里有可能找不到这个值，如果只有一页的话，页面上就不会有这个span
+
+                if span_page_count is not None:
+                    total_page_count = int(span_page_count.get_text())
+
+                if total_page_count > 1:
+                    # 理论上只要能够找到total_page_count的这个span，它的值就应该大于1
+                    # 但是为了保险起见，这里加了一个判断
+                    for page_num in range(total_page_count - 1):
+                        catalog_url_page = catalog_url + '?page=' + str(page_num + 2)
+                        print(catalog_url_page)
+                        try:
+                            cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (catalog_url_page, 0))
+                        except Exception as e:
+                            continue
+
+            # 这里是正常的筛查目录和商品的地方
+            for link in soup.find_all('a'):
+                link_url = link.get('href')
+                if link_url is not None:
+                    # 对link进行处理，去掉后面的查询关键词；
+                    query_pos = link_url.find('?')
+                    if query_pos >= 0:
+                        link_url = link_url[:query_pos]
+
+                    # 如果link_url不是以'/'，统一加上，便于去重
+                    if not link_url.endswith('/'):
+                        link_url = link_url + '/'
+
+                    # 这些是商品
+                    if link_url.startswith(FP_SPIDER_PRODUCT_CHN_PRE):
+                        try:
+                            cur.execute('INSERT INTO product VALUES (NULL,?,NULL,?)', (link_url, 0))
+                            print(link_url)
+                            print("It's a product.")
+                            print_now()
+                        except Exception as e:
+                            # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
+                            continue
+                    elif link_url.startswith(FP_SPIDER_ROOT_CHN_URL):
+                        # 下面的就是目录
+                        try:
+                            cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (link_url, 0))
+                            print(link_url)
+                            print("It's a catalog.")
+                            print_now()
+                        except Exception as e:
+                            # print(">>>>>>>>>>> Insert catalog url EXCEPTION:  " + str(e))
+                            continue
+
+        cur.execute('UPDATE catalog SET deal=1 WHERE id=?', (catalog_id,))
+        conn.commit()
+        conn.close()
+        return
+
+
+class MultiTest(object):
+    def __init__(self):
+        self.url = "asdfasdfasdf"
+
+        request_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
+
+        pool = multiprocessing.Pool(processes=40)
+
+        for row in range(100):
+            pool.apply_async(self.test, (request_headers,))
+
+        print("Mark~ Mark~ Mark~~~~~~~~~~~~~~~~~~~~~~")
+        pool.close()
+        pool.join()  # 调用join之前，先调用close函数，否则会出错。执行完close后不会有新的进程加入到pool,join函数等待所有子进程结束
+        print("Sub-process(es) done.")
+
+    def test(self, a):
+        print_now(self.url)
+
+    def get_test_soup(self, url):
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
+
+        request = urllib.request.Request(url, headers=headers)
+        print(url)
+        try:
+            response = urllib.request.urlopen(request)
+            html = response.read().decode('utf-8')
+            soup = BeautifulSoup(html, "html.parser")
+            print(soup)
+        except Exception as e:
+            print(">>>>>>>>>>> Get HTML soup EXCEPTION:  " + str(e))
+
+        finally:
+            return
 
 
 class Item(Url):
@@ -271,7 +453,6 @@ class FreePeopleItem(Item):
                     model_info_str = model_info_str.replace('\n', '')
                     self.model_info = model_info_str.replace(' ', '')
 
-
     def draw_desc_picture(self):
         desc_list = []
         desc_split_str = "-" * 48
@@ -460,6 +641,10 @@ def analyse_revolve(revolve_url):
 
 
 def fp_spider_analyze_catalog(catalog_id):
+    DB_NAME = "fp_spider.db"
+    FP_SPIDER_ROOT_CHN_URL = "https://www.freepeople.com/china/"
+    FP_SPIDER_PRODUCT_CHN_PRE = 'https://www.freepeople.com/china/shop/'
+
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cur = conn.cursor()
 
@@ -470,11 +655,8 @@ def fp_spider_analyze_catalog(catalog_id):
     cur.execute("SELECT catalog_url FROM catalog WHERE id=?", (catalog_id,))
     catalog_url = cur.fetchone()[0]
 
-    print(catalog_url)
-
     # 连接并请求网页
-    request_headers = {}
-    request_headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
+    request_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
     soup, response_headers = get_html_soup(catalog_url, request_headers)
 
     if soup is not None:
@@ -521,6 +703,7 @@ def fp_spider_analyze_catalog(catalog_id):
                         cur.execute('INSERT INTO product VALUES (NULL,?,NULL,?)', (link_url, 0))
                         print(link_url)
                         print("It's a product.")
+                        print_now()
                     except Exception as e:
                         # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
                         continue
@@ -530,6 +713,7 @@ def fp_spider_analyze_catalog(catalog_id):
                         cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (link_url, 0))
                         print(link_url)
                         print("It's a catalog.")
+                        print_now()
                     except Exception as e:
                         # print(">>>>>>>>>>> Insert catalog url EXCEPTION:  " + str(e))
                         continue
@@ -537,7 +721,7 @@ def fp_spider_analyze_catalog(catalog_id):
     cur.execute('UPDATE catalog SET deal=1 WHERE id=?', (catalog_id,))
     conn.commit()
     conn.close()
-    print(time.time() - start)
+    print_now()
     return
 
 
@@ -578,34 +762,32 @@ def init_DB(operation='keep'):
     conn.close()
 
 
-def fp_spider():
-    init_DB()
+def print_now():
+    print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    print(time.time() - start)
+
+def fp_spider():
+    print_now()
+
+    init_DB()
 
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     cur = conn.cursor()
     cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
+    result = cur.fetchall()
+    conn.close()
 
-    try:
-        catalog_id = cur.fetchone()[0]
-    except Exception as e:
-        pass
-    finally:
-        conn.close()
+    while len(result) > 0:
+        pool = multiprocessing.Pool(processes=100)
+        for row in result:
+            pool.apply_async(fp_spider_analyze_catalog, (row[0],))
+        pool.close()
+        pool.join()
 
-    while catalog_id:
-        print('catalog id is:' + str(catalog_id))
-        fp_spider_analyze_catalog(catalog_id)
         conn = sqlite3.connect(DB_NAME, check_same_thread=False)
         cur = conn.cursor()
-        try:
-            cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
-            catalog_id = cur.fetchone()[0]
-        except Exception as e:
-            # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
-            catalog_id = None
-            continue
+        cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
+        result = cur.fetchall()
         conn.close()
 
     print("It's over.")
@@ -639,8 +821,30 @@ def main():
             print("错误：输入的地址不是合法的商品地址...")
             print("\n")
 
-def f(x):
-    return x*x
+
+def get_test_soup(url):
+    """
+
+    :param url:
+    :param headers:
+    :return:
+
+    """
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
+
+    request = urllib.request.Request(url, headers=headers)
+    print(url)
+    try:
+        response = urllib.request.urlopen(request)
+        html = response.read().decode('utf-8')
+        soup = BeautifulSoup(html, "html.parser")
+        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception as e:
+        print(">>>>>>>>>>> Get HTML soup EXCEPTION:  " + str(e))
+
+    finally:
+        return
+
 
 def test():
     # url = "https://www.freepeople.com/china/shop/that-girl-maxi-dress/"
@@ -649,10 +853,30 @@ def test():
     # print(freepeople_item.memo)
     # 新线程执行的代码:
 
-    pool = Pool(processes=5)
-    result = pool.apply_async(f, [10])
-    print(result.get(timeout=1))
-    print(pool.map(f, range(10)))
+    fp_spider = FreePeopleSpider()
+
+    # while catalog_id:
+    #     print('catalog id is:' + str(catalog_id))
+    #     fp_spider_analyze_catalog(catalog_id)
+    #     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    #     cur = conn.cursor()
+    #     try:
+    #         cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
+    #         catalog_id = cur.fetchone()[0]
+    #     except Exception as e:
+    #         # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
+    #         catalog_id = None
+    #         continue
+    #     conn.close()
+    #
+    # print("It's over.")
+
+    return
+
+    # pool = multiprocessing.Pool(processes=5)
+    # result = pool.apply_async(f, [10])
+    # print(result.get(timeout=1))
+    # print(pool.map(f, range(10)))
 
 
 if __name__ == '__main__':
