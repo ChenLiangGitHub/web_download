@@ -9,6 +9,7 @@ import sqlite3
 import time
 import urllib.request
 import datetime
+import socket
 
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
@@ -23,8 +24,8 @@ class Url(object):
     def get_soup(self):
         try:
             self.response = urllib.request.urlopen(self.request, timeout=20)
-            html = self.response.read().decode('utf-8')
-            self.soup = BeautifulSoup(html, "html.parser")
+            self.html = self.response.read().decode('utf-8')
+            self.soup = BeautifulSoup(self.html, "html.parser")
         except Exception as e:
             print(">>>> get_soup EXCEPTION >>>> " + str(e))
             return None
@@ -97,7 +98,6 @@ class FreePeopleSpider(object):
         cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
         result = cur.fetchall()
 
-
         while len(result) > 0:
             pool = multiprocessing.Pool(processes=100)
             for row in result:
@@ -128,6 +128,8 @@ class FreePeopleSpider(object):
 
         # 连接并请求网页
         soup= self.get_soup(catalog_url)
+
+        print(soup)
 
         if soup is not None:
             if catalog_url.find('?page=') < 0:
@@ -193,41 +195,93 @@ class FreePeopleSpider(object):
         conn.close()
         return
 
+    class Worker(Url):
+        def __init__(self, url):
+            Url.__init__(self, url)
 
-class MultiTest(object):
-    def __init__(self):
-        self.url = "asdfasdfasdf"
+            self.database_file = "freepeople_spider.db"
+            self.root_url = "https://www.freepeople.com/china/"
+            self.item_url = 'https://www.freepeople.com/china/shop/'
 
-        request_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
+            self.soup = None
 
-        pool = multiprocessing.Pool(processes=40)
+        def worker(self):
+            conn = sqlite3.connect(self.database_file, check_same_thread=False)
+            cur = conn.cursor()
+            cur.execute("SELECT catalog_url FROM catalog WHERE id=?", (catalog_id,))
+            catalog_url = cur.fetchone()[0]
 
-        for row in range(100):
-            pool.apply_async(self.test, (request_headers,))
+            # 连接并请求网页
+            soup = self.get_soup(catalog_url)
 
-        print("Mark~ Mark~ Mark~~~~~~~~~~~~~~~~~~~~~~")
-        pool.close()
-        pool.join()  # 调用join之前，先调用close函数，否则会出错。执行完close后不会有新的进程加入到pool,join函数等待所有子进程结束
-        print("Sub-process(es) done.")
-
-    def test(self, a):
-        print_now(self.url)
-
-    def get_test_soup(self, url):
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
-
-        request = urllib.request.Request(url, headers=headers)
-        print(url)
-        try:
-            response = urllib.request.urlopen(request)
-            html = response.read().decode('utf-8')
-            soup = BeautifulSoup(html, "html.parser")
             print(soup)
-        except Exception as e:
-            print(">>>>>>>>>>> Get HTML soup EXCEPTION:  " + str(e))
 
-        finally:
+            if soup is not None:
+                if catalog_url.find('?page=') < 0:
+                    # 只有是第一页的才尝试进行分页的操作
+                    # 找到total - page - count的值
+                    # 然后将page=2至total-page-count写入数据库
+
+                    total_page_count = 1
+                    span_page_count = soup.find('span',
+                                                attrs={'class': 'total-page-count'})
+                    # 这里有可能找不到这个值，如果只有一页的话，页面上就不会有这个span
+
+                    if span_page_count is not None:
+                        total_page_count = int(span_page_count.get_text())
+
+                    if total_page_count > 1:
+                        # 理论上只要能够找到total_page_count的这个span，它的值就应该大于1
+                        # 但是为了保险起见，这里加了一个判断
+                        for page_num in range(total_page_count - 1):
+                            catalog_url_page = catalog_url + '?page=' + str(page_num + 2)
+                            print(catalog_url_page)
+                            try:
+                                cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (catalog_url_page, 0))
+                            except Exception as e:
+                                continue
+
+                # 这里是正常的筛查目录和商品的地方
+                for link in soup.find_all('a'):
+                    link_url = link.get('href')
+                    if link_url is not None:
+                        # 对link进行处理，去掉后面的查询关键词；
+                        query_pos = link_url.find('?')
+                        if query_pos >= 0:
+                            link_url = link_url[:query_pos]
+
+                        # 如果link_url不是以'/'，统一加上，便于去重
+                        if not link_url.endswith('/'):
+                            link_url = link_url + '/'
+
+                        # 这些是商品
+                        if link_url.startswith(FP_SPIDER_PRODUCT_CHN_PRE):
+                            try:
+                                cur.execute('INSERT INTO product VALUES (NULL,?,NULL,?)', (link_url, 0))
+                                print(link_url)
+                                print("It's a product.")
+                                print_now()
+                            except Exception as e:
+                                # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
+                                continue
+                        elif link_url.startswith(FP_SPIDER_ROOT_CHN_URL):
+                            # 下面的就是目录
+                            try:
+                                cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (link_url, 0))
+                                print(link_url)
+                                print("It's a catalog.")
+                                print_now()
+                            except Exception as e:
+                                # print(">>>>>>>>>>> Insert catalog url EXCEPTION:  " + str(e))
+                                continue
+
+            cur.execute('UPDATE catalog SET deal=1 WHERE id=?', (catalog_id,))
+            conn.commit()
+            conn.close()
             return
+
+
+
 
 
 class Item(Url):
@@ -504,226 +558,111 @@ class FreePeopleItem(Item):
         print(self.desc_picture_path)
 
 
-def water_mark(img_source, water_str, color='black'):
-    """
-    在图片上打水印；
-    同时在左上角写上字
-    :param img_source:
-    :param water_str:在左上角写的字
-    :return:
-    """
-    img_water_mark = ''
-    if color == 'black':
-        img_water_mark = 'watermark\\watermark_black.png'
-    else:
-        img_water_mark = 'watermark\\watermark.png'
+class SpellUsaItem(Item):
+    def __init__(self, url):
+        Item.__init__(self,url)
 
-    text_font = ImageFont.truetype("watermark\\xjlFont.ttf", 50)
-    text_color = (80, 80, 80)  # 深灰色
-    text_pos = (10, 10)  # 从左上角计算
+        if self.get_soup() is not None:
+            if self.make_dir() is not None:
+                self.get_picture()
+                self.get_buyers_show()
+        return
 
-    try:
-        im = Image.open(img_source)
+    def make_dir(self):
+        self.item_dir = self.url[self.url.rfind('/') + len('/'):]
+        if len(self.item_dir) <= 0:
+            print(">>>>>>>>>>> Make dir EXCEPTION: Dir is empty. ")
+            return None
 
-        # 在图片上写字
-        draw = ImageDraw.Draw(im)
-        draw.text(text_pos, water_str, fill=text_color, font=text_font)
-        im.save(img_source)
+        self.item_dir = os.getcwd() + '\\' + self.item_dir + '\\'
 
-        # 打水印
-        wm = Image.open(img_water_mark)
-        layer = Image.new('RGBA', im.size, (0, 0, 0, 0))
-        layer.paste(wm, (im.size[0] - wm.size[0], im.size[1] - wm.size[1]))
-        new_im = Image.composite(layer, im, layer)
-        new_im.save(img_source)
-
-    except Exception as e:
-        print(">>>>>>>>>>> WaterMark EXCEPTION:")
-        print(str(e))
-        return False
-    else:
-        return True
-
-
-def get_html_soup(url, headers):
-    """
-
-    :param url:
-    :param headers:
-    :return:
-
-    """
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        response = urllib.request.urlopen(request)
-        html = response.read().decode('utf-8')
-        soup = BeautifulSoup(html, "html.parser")
-    except Exception as e:
-        print(">>>>>>>>>>> Get HTML soup EXCEPTION:  " + str(e))
-        return None, None
-    else:
-        return soup, response.headers
-
-
-def analyse_revolve(revolve_url):
-    # 分析revolve网址，提取商品目录名称并创建目录
-    item_dir = revolve_url
-    item_dir = item_dir.replace(REVOLVE_ROOT_URL, '')
-    item_dir = item_dir[:item_dir.find('/')]
-    item_name_with_color = item_dir
-    item_dir = item_dir[:item_dir.find('-in-')]
-
-    try:
-        if not os.path.exists(item_dir):
-            os.mkdir(item_dir)
-
-    except Exception as e:
-        print(">>>>>>>>>>> Make dir EXCEPTION:  " + str(e))
-        return None
-
-    else:
-        item_path = os.getcwd() + '\\' + item_dir + '\\'
-
-    # 连接并请求网页
-    request_headers = {}
-    request_headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'
-    soup, response_headers = get_html_soup(revolve_url, request_headers)
-
-    div_img_page = soup.find('div',
-                             attrs={'id': 'js-primary-slideshow__pager'})
-
-    item_color = soup.find('span',
-                           attrs={'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
-
-    for img in div_img_page.find_all('a'):
-        img_url = img['data-zoom-image']
-        img_name = img_url[img_url.rfind('/') + 1:]
+        if os.path.exists(self.item_dir):
+            print(">>>> make_dir EXCEPTION >>>> Dir has been there." )
+            return True
 
         try:
-            urllib.request.urlretrieve(img_url, item_path + img_name)
-            water_mark(item_path + img_name, item_color, 'black')
-            print(item_color + '-' + img_name)
+            os.mkdir(self.item_dir)
         except Exception as e:
-            print(">>>>>>>>>>> Get picture EXCEPTION:  " + str(e))
-            continue
+            print(">>>> make_dir EXCEPTION >>>> " + str(e))
+            return None
+        else:
+            return True
 
-    # # 看是否有其他颜色
-    color_list = soup.find('div',
-                           attrs={'class': 'product-swatches product-swatches--lg u-margin-t--none'})
+    def get_picture(self):
+        self.div_picture = self.soup.find('div',
+                                          attrs={'class': 'thumbs-scroll'})
+        for link in self.div_picture.find_all('a'):
+            picture_link = link['data-image']
+            if picture_link.find('Video-Website') >= 0:
+                # 这一行是视频的那一行
+                continue
+            else:
+                picture_link = 'http:' + picture_link
 
-    if color_list is not None:
-        for li in color_list.find_all('li'):
-            color_url = li['onclick']
-            color_url = color_url[color_url.find("('/") + 3: color_url.find("§")]
-            if item_name_with_color not in color_url:
-                revolve_url = REVOLVE_ROOT_URL + color_url
-                soup, response_headers = get_html_soup(revolve_url, request_headers)
+                picture_link = picture_link[:picture_link.find('?')]
+                picture_link = picture_link.replace('_1024x1024', '')
+                picture_path = self.item_dir + picture_link[picture_link.rfind('/')+len('/'):]
+                urllib.request.urlretrieve(picture_link, picture_path)
+                self.water_mark(picture_path, 'Spell USA')
+                print(picture_path)
 
-                div_img_page = soup.find('div',
-                                         attrs={'id': 'js-primary-slideshow__pager'})
+        return True
 
-                item_color = soup.find('span',
-                                       attrs={
-                                           'class': 'u-font-primary u-uppercase u-margin-l--md selectedColor'}).get_text()
+    def get_buyers_show(self):
+        # 这是取卖家秀图片的初始GET参数值
+        values = {}
+        values['callback'] = '_fs_spellbyronbay'
+        values['page_size'] = 8
+        values['format'] = 'jsonp'
+        values['page'] = 1
+        values['for_url'] = self.url
 
-                for img in div_img_page.find_all('a'):
-                    img_url = img['data-zoom-image']
-                    img_name = img_url[img_url.rfind('/') + 1:]
+        # 将数据拼装成GET参数格式
+        data = urllib.parse.urlencode(values)
 
-                    try:
-                        urllib.request.urlretrieve(img_url, item_path + img_name)
-                        water_mark(item_path + img_name, item_color, 'black')
-                        print(item_color + '-' + img_name)
-                    except Exception as e:
-                        print(">>>>>>>>>>> Get picture EXCEPTION:  " + str(e))
-                        continue
-    return
+        # 这是取买家秀图片的目录
+        show_list_url = 'https://foursixty.com/api/v2/spell_byronbay/timeline?' + data
+
+        show_list = []
+
+        while show_list_url:
+            ShowListURL = Url(show_list_url)
+            if ShowListURL.get_soup() is not None:
+                json_str = ShowListURL.html
+                # 去掉头部和尾部多余的字符，使之成为标注的json格式
+                json_str = json_str.replace('_fs_spellbyronbay(', '')
+                json_str = json_str.replace(');', '')
+
+                try:
+                    json_object = json.loads(json_str)
+                except Exception as e:
+                    print(">>>> json_object EXCEPTION >>>> " + str(e))
+                    return None
+
+                # 下一页的路径
+                show_list_url = json_object['next']
+                if show_list_url == 'null':
+                    show_list_url = None
+
+                for result in json_object['results']:
+                    show_list.append(result['main_image_url'])
+
+        for show_picture_url in show_list:
+            show_picture_url = show_picture_url[:show_picture_url.find('?')]
+            show_picture_name = show_picture_url[show_picture_url.rfind('/')+len('/'):]
+            show_picture_path = self.item_dir + show_picture_name
+
+            try:
+                urllib.request.urlretrieve(show_picture_url, show_picture_path)
+                self.water_mark(show_picture_path, '买家秀')
+                print(show_picture_path)
+            except Exception as e:
+                print(">>>> 下载 spell usa 买家秀 EXCEPTION >>>> " + str(e))
+                continue
 
 
-def fp_spider_analyze_catalog(catalog_id):
-    DB_NAME = "fp_spider.db"
-    FP_SPIDER_ROOT_CHN_URL = "https://www.freepeople.com/china/"
-    FP_SPIDER_PRODUCT_CHN_PRE = 'https://www.freepeople.com/china/shop/'
 
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    cur = conn.cursor()
-
-    # 从数据库中，根据id查找对应的url
-    # 以？这个替代符写sql语句的时候，
-    # 后面括号里的数据类型必须是元组，
-    # 所以只有一个元素的时候，后面要加一个逗号
-    cur.execute("SELECT catalog_url FROM catalog WHERE id=?", (catalog_id,))
-    catalog_url = cur.fetchone()[0]
-
-    # 连接并请求网页
-    request_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
-    soup, response_headers = get_html_soup(catalog_url, request_headers)
-
-    if soup is not None:
-        if catalog_url.find('?page=') < 0:
-            # 只有是第一页的才尝试进行分页的操作
-            # 找到total - page - count的值
-            # 然后将page=2至total-page-count写入数据库
-
-            total_page_count = 1
-            span_page_count = soup.find('span',
-                                        attrs={'class': 'total-page-count'})
-            # 这里有可能找不到这个值，如果只有一页的话，页面上就不会有这个span
-
-            if span_page_count is not None:
-                total_page_count = int(span_page_count.get_text())
-
-            if total_page_count > 1:
-                # 理论上只要能够找到total_page_count的这个span，它的值就应该大于1
-                # 但是为了保险起见，这里加了一个判断
-                for page_num in range(total_page_count - 1):
-                    catalog_url_page = catalog_url + '?page=' + str(page_num + 2)
-                    print(catalog_url_page)
-                    try:
-                        cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (catalog_url_page, 0))
-                    except Exception as e:
-                        continue
-
-        # 这里是正常的筛查目录和商品的地方
-        for link in soup.find_all('a'):
-            link_url = link.get('href')
-            if link_url is not None:
-                # 对link进行处理，去掉后面的查询关键词；
-                query_pos = link_url.find('?')
-                if query_pos >= 0:
-                    link_url = link_url[:query_pos]
-
-                # 如果link_url不是以'/'，统一加上，便于去重
-                if not link_url.endswith('/'):
-                    link_url = link_url + '/'
-
-                # 这些是商品
-                if link_url.startswith(FP_SPIDER_PRODUCT_CHN_PRE):
-                    try:
-                        cur.execute('INSERT INTO product VALUES (NULL,?,NULL,?)', (link_url, 0))
-                        print(link_url)
-                        print("It's a product.")
-                        print_now()
-                    except Exception as e:
-                        # print(">>>>>>>>>>> Insert product url EXCEPTION:  " + str(e))
-                        continue
-                elif link_url.startswith(FP_SPIDER_ROOT_CHN_URL):
-                    # 下面的就是目录
-                    try:
-                        cur.execute('INSERT INTO catalog VALUES (NULL,?,?)', (link_url, 0))
-                        print(link_url)
-                        print("It's a catalog.")
-                        print_now()
-                    except Exception as e:
-                        # print(">>>>>>>>>>> Insert catalog url EXCEPTION:  " + str(e))
-                        continue
-
-    cur.execute('UPDATE catalog SET deal=1 WHERE id=?', (catalog_id,))
-    conn.commit()
-    conn.close()
-    print_now()
-    return
-
+        return True
 
 def init_DB(operation='keep'):
     """
@@ -766,42 +705,13 @@ def print_now():
     print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
-def fp_spider():
-    print_now()
-
-    init_DB()
-
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
-    result = cur.fetchall()
-    conn.close()
-
-    while len(result) > 0:
-        pool = multiprocessing.Pool(processes=100)
-        for row in result:
-            pool.apply_async(fp_spider_analyze_catalog, (row[0],))
-        pool.close()
-        pool.join()
-
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM catalog WHERE deal=0 ORDER BY id")
-        result = cur.fetchall()
-        conn.close()
-
-    print("It's over.")
-
-    return
-
-
 def main():
     split_str = "=" * 60
     while True:
         print(split_str)
         print(">> 支持以下网站：")
         print(">> Freepeople中国")
-        print(">> Revolve")
+        print(">> Spell USA")
         print("")
         print(">> 输入3，可以遍历整个FP中国网站，耗时较长，慎用")
         print(">> 输入0，用于测试")
@@ -809,41 +719,20 @@ def main():
         print(">> 请输入一个商品地址....")
         url = input(">> ")
 
+        url = url.strip()
+
         if url.startswith(FP_ITEM_PRE_URL):
             freepeople_item = FreePeopleItem(url)
-        elif url.startswith(REVOLVE_ROOT_URL):
-            analyse_revolve(url)
+        elif url.startswith(SPELL_USA_ROOT_URL):
+            spellusa_item = SpellUsaItem(url)
         elif url == "3":
-            fp_spider()
+            # fp_spider()
+            freepeople_spider = FreePeopleSpider()
         elif url == "0":
             test()
         else:
             print("错误：输入的地址不是合法的商品地址...")
             print("\n")
-
-
-def get_test_soup(url):
-    """
-
-    :param url:
-    :param headers:
-    :return:
-
-    """
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:46.0) Gecko/20100101 Firefox/46.0'}
-
-    request = urllib.request.Request(url, headers=headers)
-    print(url)
-    try:
-        response = urllib.request.urlopen(request)
-        html = response.read().decode('utf-8')
-        soup = BeautifulSoup(html, "html.parser")
-        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    except Exception as e:
-        print(">>>>>>>>>>> Get HTML soup EXCEPTION:  " + str(e))
-
-    finally:
-        return
 
 
 def test():
@@ -852,8 +741,8 @@ def test():
     # # analyse_freepeople(url)
     # print(freepeople_item.memo)
     # 新线程执行的代码:
-
-    fp_spider = FreePeopleSpider()
+    url = 'https://shop.spelldesigns.com/collections/dresses/products/oracle-maxi-dress-indigo'
+    SpellUsaItem(url)
 
     # while catalog_id:
     #     print('catalog id is:' + str(catalog_id))
@@ -881,7 +770,7 @@ def test():
 
 if __name__ == '__main__':
     # 设置全局超时时间
-    # socket.setdefaulttimeout(10)
+    socket.setdefaulttimeout(20)
 
     # 设置全局起始时间
     start = time.time()
@@ -891,6 +780,7 @@ if __name__ == '__main__':
     FP_SPIDER_PRODUCT_CHN_PRE = 'https://www.freepeople.com/china/shop/'
     FP_ITEM_PRE_URL = 'https://www.freepeople.com/china/shop/'
     REVOLVE_ROOT_URL = 'http://www.revolve.com/'
+    SPELL_USA_ROOT_URL = 'https://shop.spelldesigns.com'
     DB_NAME = "fp_spider.db"
 
     main()
